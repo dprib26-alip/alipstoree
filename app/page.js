@@ -1,55 +1,81 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
-import Header from "../components/Header";
-import CategoryFilter from "../components/CategoryFilter";
-import ProductGrid from "../components/ProductGrid";
+import { useParams, useRouter } from "next/navigation";
+import { supabase } from "../../../lib/supabaseClient";
+import { formatPrice } from "../../../lib/format";
+import BuyButtons from "../../../components/BuyButtons";
 
-export default function HomePage() {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("Semua");
-  const [categories, setCategories] = useState([]);
-  const [storeName, setStoreName] = useState("ALIP STORE");
+export default function ProductDetailPage() {
+  const { id } = useParams();
+  const router = useRouter();
+  const [product, setProduct] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  async function loadProduct() {
+    const { data } = await supabase
+      .from("products")
+      .select("*, product_images(url, sort_order)")
+      .eq("id", id)
+      .single();
+    if (data) {
+      data.product_images = [...(data.product_images || [])].sort(
+        (a, b) => a.sort_order - b.sort_order
+      );
+    }
+    setProduct(data || null);
+    setLoading(false);
+  }
 
   useEffect(() => {
-    supabase
-      .from("categories")
-      .select("name")
-      .order("sort_order")
-      .then(({ data }) => {
-        if (data) setCategories(data.map((c) => c.name));
-      });
+    loadProduct();
 
-    supabase
-      .from("store_settings")
-      .select("store_name")
-      .eq("id", 1)
-      .single()
-      .then(({ data }) => {
-        if (data?.store_name) setStoreName(data.store_name);
-      });
-  }, []);
+    const channel = supabase
+      .channel(`product-${id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "products", filter: `id=eq.${id}` },
+        loadProduct
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, [id]);
+
+  if (loading) return <div className="empty">Memuat...</div>;
+  if (!product) {
+    return (
+      <div className="empty">
+        Produk tidak ditemukan atau sudah dihapus.
+        <div style={{ marginTop: 12 }}>
+          <a onClick={() => router.push("/")} style={{ color: "var(--blue-700)", cursor: "pointer" }}>
+            ← Kembali ke beranda
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  const hasPromo = product.promo_active && product.promo_price != null;
+  const cover = product.product_images?.[0]?.url;
 
   return (
-    <>
-      <Header query={query} onQueryChange={setQuery} storeName={storeName} />
-
-      <div className="hero">
-        <h1>Akun game</h1>
-        <p>
-          Mobile Legends, Free Fire, Genshin Impact, dan game lainnya. Lihat
-          detail akun, lalu hubungi lewat WhatsApp.
-        </p>
+    <div className="detail-wrap">
+      <div
+        className="detail-thumb"
+        style={cover ? { backgroundImage: `url(${cover})` } : {}}
+      />
+      <p className="cgame">{product.game} · ID {product.product_code}</p>
+      <h1>{product.title}</h1>
+      <p className="desc">{product.description}</p>
+      <div className="price-big">
+        {formatPrice(hasPromo ? product.promo_price : product.price)}
+        {hasPromo && <span className="was-big">{formatPrice(product.price)}</span>}
       </div>
-
-      <CategoryFilter categories={categories} active={category} onChange={setCategory} />
-
-      <main className="content">
-        <ProductGrid query={query} category={category} />
-      </main>
-
-      <footer className="site-footer">© {new Date().getFullYear()} {storeName}</footer>
-    </>
+      <p style={{ color: "var(--ink-soft)", fontSize: ".85rem", marginTop: 4 }}>
+        {product.stock === 0 ? "Stok habis saat ini" : `Stok tersedia: ${product.stock}`}
+      </p>
+      <BuyButtons product={product} />
+    </div>
   );
 }
